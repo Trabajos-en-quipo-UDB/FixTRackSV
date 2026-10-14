@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+process.env.FIXTRACK_DB=path.join(mkdtempSync(path.join(tmpdir(),'fixtrack-sessions-')),'test.sqlite');
+const {db,insert}=await import('../src/lib/db.js');
+const {issueSession,sessionUser,revokeSession}=await import('../src/lib/sessions.js');
+const id=insert('users',{name:'Test',email:'test@example.test',password:'test-hash',role:'Técnico',active:1});
+const token=issueSession(id);assert.match(token,/^[a-f0-9]{64}$/);assert.equal(sessionUser(token).id,id);
+assert.equal(db().prepare('SELECT token FROM sessions').get().token,createHash('sha256').update(token).digest('hex'));
+assert.equal(sessionUser('invalid'),null);assert.equal(sessionUser('f'.repeat(64)),null);
+db().prepare('UPDATE sessions SET expires=?').run(Date.now()-1);assert.equal(sessionUser(token),null);
+const second=issueSession(id);revokeSession(second);assert.equal(sessionUser(second),null);
+const third=issueSession(id);db().prepare('UPDATE users SET active=0 WHERE id=?').run(id);assert.equal(sessionUser(third),null);
+db().close();console.log('OK: tokens aleatorios, almacenamiento por hash, vencimiento, revocación y cuentas desactivadas.');

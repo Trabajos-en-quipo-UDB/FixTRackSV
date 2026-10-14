@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+const base=process.env.TEST_URL || 'http://localhost:3100';
+const password='Test-password-2026';
+const suffix=Date.now();
+function client(){let cookie='';return async(path,method='GET',body,expected=200)=>{const r=await fetch(`${base}/api/${path}`,{method,headers:{'Content-Type':'application/json',cookie},body:body?JSON.stringify(body):undefined});const set=r.headers.get('set-cookie');if(set)cookie=set.split(';')[0];const result=await r.json();assert.equal(r.status,expected,`${method} ${path}: ${JSON.stringify(result)}`);return result;};}
+const admin=client(),tech=client(),other=client(),reception=client(),anon=client();
+await anon('data','GET',null,401);
+await admin('auth/register','POST',{name:'Administrador de prueba',email:`admin${suffix}@example.test`,password},201);
+for(const [call,name] of [[tech,'tech'],[other,'other'],[reception,'reception']]) {
+ const r=await call('auth/register','POST',{name:`Usuario ${name}`,email:`${name}${suffix}@example.test`,password},201);assert.equal(r.pending,true);
+ await call('auth/login','POST',{email:`${name}${suffix}@example.test`,password},401);
+}
+let data=await admin('data');
+const t=data.users.find(u=>u.email===`tech${suffix}@example.test`), r=data.users.find(u=>u.email===`reception${suffix}@example.test`),o=data.users.find(u=>u.email===`other${suffix}@example.test`);
+for (const [u,role] of [[t,'Técnico'],[o,'Técnico'],[r,'Recepcionista']]) await admin(`users/${u.id}`,'PATCH',{role,active:true});
+await tech('auth/login','POST',{email:t.email,password});await other('auth/login','POST',{email:o.email,password});await reception('auth/login','POST',{email:r.email,password});
+await tech('clients','POST',{name:'Prohibido',phone:'77777777'},403);
+const c=await reception('clients','POST',{name:'Cliente de prueba',phone:'7777-7777',email:'client@example.test'},201);
+const e=await reception('equipment','POST',{client_id:c.id,type:'Laptop',brand:'Dell',model:'Latitude',serial:'TEST-01'},201);
+const order=await reception('orders','POST',{equipment_id:e.id,technician_id:t.id,problem:'El equipo no enciende.',priority:'Alta'},201);
+assert.equal((await other('data')).orders.length,0);
+await other(`orders/${order.id}`,'PATCH',{status:'En diagnóstico'},403);
+await tech(`orders/${order.id}`,'PATCH',{status:'Entregado'},403);
+await tech(`orders/${order.id}`,'PATCH',{status:'Reparado'},422);
+await tech(`orders/${order.id}`,'PATCH',{status:'En diagnóstico',service_cost:25});
+await reception('diagnostics','POST',{order_id:order.id,finding:'Diagnóstico no permitido'},403);
+await tech('diagnostics','POST',{order_id:order.id,finding:'Unidad de almacenamiento defectuosa.',work:'Sustitución de SSD'},201);
+const p=await admin('parts','POST',{name:'SSD 500 GB',price:40,sku:'SSD500'},201);
+await tech('lines','POST',{order_id:order.id,part_id:p.id,quantity:1.5},422);
+await tech('lines','POST',{order_id:order.id,part_id:p.id,quantity:1},201);
+await reception('payments','POST',{order_id:order.id,amount:66,method:'Efectivo'},422);
+for(const status of ['Esperando aprobación','En reparación','Reparado','Listo para entregar']) await tech(`orders/${order.id}`,'PATCH',{status});
+await reception(`orders/${order.id}`,'PATCH',{status:'Entregado',technician_id:t.id},422);
+await reception('payments','POST',{order_id:order.id,amount:65,method:'Efectivo'},201);
+await reception(`orders/${order.id}`,'PATCH',{status:'Entregado',technician_id:t.id});
+await tech('diagnostics','POST',{order_id:order.id,finding:'No debe modificar una orden cerrada'},422);
+await admin(`clients/${c.id}`,'DELETE',null,409);
+await admin(`orders/${order.id}`,'DELETE',null,422);
+data=await admin('data');assert.equal(data.orders.find(x=>x.id===order.id).status,'Entregado');assert.equal(data.history.filter(x=>x.order_id===order.id).length,7);
+await admin(`users/${t.id}`,'PATCH',{role:'Técnico',active:false});await tech('data','GET',null,401);
+await reception('auth/logout','POST',{});await reception('data','GET',null,401);
+console.log('OK: registro, activación, roles, aislamiento de órdenes, diagnóstico, repuestos, pagos, cierre, historial, integridad y revocación de sesión.');
